@@ -104,6 +104,7 @@ def modify_audio(audio, model, mag_model, class_idx):
     # Regression
     out_spect = mag_model.predict(audio)[0, :, :, 0].T
     mt = my_psm.maskingThreshold(out_spect).T[None, :, :, None]
+    imt = (1./(mt + 1e-4) ) ** 2.
 
     loss = custom_loss(input_data, class_idx, out, audio_original)
 
