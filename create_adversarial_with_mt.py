@@ -75,12 +75,13 @@ def compute_td_mt(x):
 
     return wv_mt
 
-def custom_loss_with_mt(input_data, class_idx, out, audio_original, mt_signal):
-    epsilon = 1e-1
+def custom_loss_with_mt(input_data, class_idx, l_reg, out, audio_original, mt_signal):
+    epsilon = 1e-4
     y_true = np_utils.to_categorical(class_idx, num_classes=10)
     cross_entropy = K.categorical_crossentropy(y_true, out)
-    distortion = K.sum(K.pow(input_data - audio_original, 2.) / (K.pow(mt_signal, 2.) + epsilon), axis=2, keepdims=False)
-    total_loss = distortion + cross_entropy
+    distortion = K.mean(K.pow(input_data - audio_original, 2.) / (K.pow(mt_signal, 2.) + epsilon),
+                        axis=2, keepdims=False)
+    total_loss = cross_entropy + l_reg*distortion
     return total_loss
 
 
@@ -124,18 +125,17 @@ def build_keras_model(SR, MAX_LENGTH_S):
     return full_model
 
 
-def modify_audio(audio, mt, model, class_idx):
+def modify_audio(audio, mt, model, class_idx, l_reg):
     
     # Classification
     audio_original = audio
-    noisy_audio = audio + 2.*mt
 
     input_data = model.input[0]
     input_mt = model.input[1]
 
     out = model.output
 
-    loss = custom_loss_with_mt(input_data, class_idx, out, audio_original, input_mt)
+    loss = custom_loss_with_mt(input_data, class_idx, l_reg, out, audio_original, input_mt)
 
     grads_history = []
     grads = K.gradients(loss, input_data)[0]
@@ -144,18 +144,16 @@ def modify_audio(audio, mt, model, class_idx):
     grads /= (K.sqrt(K.mean(K.square(grads))) + 1e-5)
     
     iterate = K.function([input_data, input_mt], [loss, grads])
-    
+
     for i in range(500):
-        loss_value, grads_value = iterate([noisy_audio, mt])
+        loss_value, grads_value = iterate([audio, mt])
         grads_history.append(grads_value)
-        audio_tmp = audio - 0.1 * grads_value
-        noisy_audio = audio_tmp
+        audio_tmp = audio - 0.1*grads_value
+        audio = audio_tmp
         """
         if i % 20 == 0:
-            plt.figure(1)
+            plt.figure()
             plt.plot(grads_value[0, 0, :])
-            plt.figure(2)
-            plt.plot(loss_value)
             plt.show()
         """
         #print('Current loss value:', loss_value)
@@ -172,9 +170,15 @@ def main():
     parser.add_argument('--in', type=str, dest="input", nargs='+',
                         required=True,
                         help="Input audio .wav file(s), at 44100KHz (separated by spaces)")
+
     parser.add_argument('--class', type=int, dest="class_idx", nargs='+',
                         required=True,
                         help="Index of the class we want to achieve")
+
+    parser.add_argument('--lambda', type=float, dest="lambda_reg", nargs='+',
+                        required=True,
+                        help="Lambda parameter for scaling the distortion loss")
+
     args = parser.parse_args()
 
     fs, audio = wav.read(args.input[0])
@@ -184,6 +188,9 @@ def main():
 
     # Compute the masking threshold
     mt = compute_td_mt(audio)
+
+    lambda_reg = args.lambda_reg[0]
+    print('Lambda parameter: ' + str(lambda_reg))
 
     class_idx = args.class_idx[0]
     adv_wav = os.path.join(workspace,  "adv_"+str(class_idx)+".wav")
@@ -199,8 +206,8 @@ def main():
 
     prediction = full_model.predict([audio, mt])
     print(np.argmax(prediction))
-    
-    adv_audio = modify_audio(audio, mt, full_model, class_idx)
+
+    adv_audio = modify_audio(audio, mt, full_model, class_idx, lambda_reg)
     
     wav.write(adv_wav, fs, adv_audio.astype(np.int16))
     wav.write(mt_wav, fs, mt)
